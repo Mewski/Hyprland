@@ -7,6 +7,8 @@
 
 #include <vector>
 
+class CUnifiedScrollingSwipeGesture;
+
 namespace Layout::Tiled {
     class CScrollingAlgorithm;
     struct SColumnData;
@@ -110,6 +112,7 @@ namespace Layout::Tiled {
         virtual void                             moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent);
 
         CBox                                     usableArea();
+        SP<SScrollingData>                       scrollingData() const { return m_scrollingData; }
 
         enum eInputMode : uint8_t {
             INPUT_MODE_SOFT = 0,
@@ -141,5 +144,6 @@ namespace Layout::Tiled {
         float                    defaultColumnWidth();
 
         friend struct SScrollingData;
+        friend class ::CUnifiedScrollingSwipeGesture;
     };
 };

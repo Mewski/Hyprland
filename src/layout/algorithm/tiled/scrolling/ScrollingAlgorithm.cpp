@@ -8,6 +8,7 @@
 #include "../../../../Compositor.hpp"
 #include "../../../../desktop/state/FocusState.hpp"
 #include "../../../../config/ConfigValue.hpp"
+#include "../../../../managers/input/UnifiedScrollingSwipeGesture.hpp"
 #include "../../../../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "../../../../render/Renderer.hpp"
 #include "../../../../managers/input/InputManager.hpp"
@@ -549,6 +550,9 @@ CScrollingAlgorithm::~CScrollingAlgorithm() {
 }
 
 void CScrollingAlgorithm::focusOnInput(SP<ITarget> target, eInputMode input) {
+    if (g_pUnifiedScrollingSwipe->isGestureInProgress())
+        return;
+
     static const auto PFOLLOW_FOCUS_MIN_PERC = CConfigValue<Hyprlang::FLOAT>("scrolling:follow_min_visible");
 
     if (!target || target->space() != m_parent->space())

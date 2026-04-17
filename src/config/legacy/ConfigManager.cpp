@@ -47,6 +47,7 @@
 #include "../../managers/input/trackpad/gestures/FloatGesture.hpp"
 #include "../../managers/input/trackpad/gestures/FullscreenGesture.hpp"
 #include "../../managers/input/trackpad/gestures/CursorZoomGesture.hpp"
+#include "../../managers/input/trackpad/gestures/ScrollingSwipeGesture.hpp"
 
 #include "../../event/EventBus.hpp"
 
@@ -767,6 +768,7 @@ CConfigManager::CConfigManager() {
     registerConfigVar("gestures:workspace_swipe_touch", Hyprlang::INT{0});
     registerConfigVar("gestures:workspace_swipe_touch_invert", Hyprlang::INT{0});
     registerConfigVar("gestures:close_max_timeout", Hyprlang::INT{1000});
+    registerConfigVar("gestures:scrolling_swipe_invert", Hyprlang::INT{0});
 
     registerConfigVar("xwayland:enabled", Hyprlang::INT{1});
     registerConfigVar("xwayland:use_nearest_neighbor", Hyprlang::INT{1});
@@ -2272,7 +2274,9 @@ std::optional<std::string> CConfigManager::handleGesture(const std::string& comm
     else if (data[startDataIdx] == "cursorZoom") {
         result = g_pTrackpadGestures->addGesture(makeUnique<CCursorZoomTrackpadGesture>(std::string{data[startDataIdx + 1]}, std::string{data[startDataIdx + 2]}), fingerCount,
                                                  direction, modMask, deltaScale, disableInhibit);
-    } else if (data[startDataIdx] == "unset")
+    } else if (data[startDataIdx] == "scrolling")
+        result = g_pTrackpadGestures->addGesture(makeUnique<CScrollingSwipeGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
+    else if (data[startDataIdx] == "unset")
         result = g_pTrackpadGestures->removeGesture(fingerCount, direction, modMask, deltaScale, disableInhibit);
     else
         return std::format("Invalid gesture: {}", data[startDataIdx]);
