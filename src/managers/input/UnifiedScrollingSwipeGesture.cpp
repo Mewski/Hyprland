@@ -157,11 +157,11 @@ void CUnifiedScrollingSwipeGesture::end() {
     const double      usablePrimary = SDATA->controller->isPrimaryHorizontal() ? USABLE.w : USABLE.h;
     const double      normFactor    = usablePrimary / WORKING_AREA_MOVEMENT;
 
-    const double projectedEnd  = trackerProjectedEndPos() * normFactor;
-    const double maxExtent     = SDATA->controller->calculateMaxExtent(USABLE, *PFSONONE);
-    const double minOffset     = 0.0;
-    const double maxOffset     = std::max(0.0, maxExtent - usablePrimary);
-    const double targetOffset  = std::clamp(m_baseOffset - projectedEnd, minOffset, maxOffset);
+    const double projectedEnd    = trackerProjectedEndPos() * normFactor;
+    const double maxExtent       = SDATA->controller->calculateMaxExtent(USABLE, *PFSONONE);
+    const double minOffset       = 0.0;
+    const double maxOffset       = std::max(0.0, maxExtent - usablePrimary);
+    const double unclampedTarget = m_baseOffset - projectedEnd;
 
     struct SSnap {
         double offset;
@@ -175,16 +175,10 @@ void CUnifiedScrollingSwipeGesture::end() {
         const double stripSize  = SDATA->controller->calculateStripSize(i, USABLE, *PFSONONE);
 
         if (*PFITMETHOD == 1) {
-            const double lo = stripStart - usablePrimary + stripSize;
-            const double hi = stripStart;
-
-            if (lo <= maxOffset)
-                snaps.push_back({std::clamp(lo, minOffset, maxOffset), i});
-            if (hi >= minOffset)
-                snaps.push_back({std::clamp(hi, minOffset, maxOffset), i});
+            snaps.push_back({stripStart - usablePrimary + stripSize, i});
+            snaps.push_back({stripStart, i});
         } else {
-            const double centered = stripStart - (usablePrimary - stripSize) / 2.0;
-            snaps.push_back({std::clamp(centered, minOffset, maxOffset), i});
+            snaps.push_back({stripStart - (usablePrimary - stripSize) / 2.0, i});
         }
     }
 
@@ -196,17 +190,36 @@ void CUnifiedScrollingSwipeGesture::end() {
     size_t bestIdx  = 0;
     double bestDist = std::numeric_limits<double>::max();
     for (size_t i = 0; i < snaps.size(); ++i) {
-        const double dist = std::abs(snaps[i].offset - targetOffset);
+        const double dist = std::abs(snaps[i].offset - unclampedTarget);
         if (dist < bestDist) {
             bestDist = dist;
             bestIdx  = i;
         }
     }
 
-    const size_t targetColIdx  = snaps[bestIdx].colIdx;
-    const double targetSnapOff = snaps[bestIdx].offset;
+    size_t       targetColIdx  = snaps[bestIdx].colIdx;
+    const double targetSnapOff = std::clamp(snaps[bestIdx].offset, minOffset, maxOffset);
 
-    m_active = false;
+    const double currentOffset = SDATA->controller->getOffset();
+
+    if (*PFITMETHOD == 1) {
+        if (unclampedTarget >= currentOffset) {
+            for (size_t i = targetColIdx + 1; i < SDATA->columns.size(); ++i) {
+                const double colStart = SDATA->controller->calculateStripStart(i, USABLE, *PFSONONE);
+                const double colEnd   = colStart + SDATA->controller->calculateStripSize(i, USABLE, *PFSONONE);
+                if (colEnd > targetSnapOff + usablePrimary)
+                    break;
+                targetColIdx = i;
+            }
+        } else {
+            for (size_t i = targetColIdx; i > 0; --i) {
+                const double colStart = SDATA->controller->calculateStripStart(i - 1, USABLE, *PFSONONE);
+                if (colStart < targetSnapOff)
+                    break;
+                targetColIdx = i - 1;
+            }
+        }
+    }
 
     SDATA->controller->setOffset(targetSnapOff);
     SDATA->recalculate(false);
@@ -217,6 +230,6 @@ void CUnifiedScrollingSwipeGesture::end() {
             SCROLLING->focusTargetUpdate(TARGET);
     }
 
-    g_pInputManager->refocus();
+    m_active = false;
     g_pHyprRenderer->damageMonitor(PMONITOR);
 }
