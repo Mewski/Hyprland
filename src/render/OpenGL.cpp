@@ -33,7 +33,7 @@
 #include "../event/EventBus.hpp"
 #include "../managers/screenshare/ScreenshareManager.hpp"
 #include "../notification/NotificationOverlay.hpp"
-#include "hyprerror/HyprError.hpp"
+#include "errorOverlay/Overlay.hpp"
 #include "macros.hpp"
 #include "pass/TexPassElement.hpp"
 #include "pass/RectPassElement.hpp"
@@ -916,16 +916,16 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(absPath, ec)) {
         if (ec)
-            g_pHyprError->queueError("Screen shader parser: Failed to check screen shader path: " + ec.message());
+            ErrorOverlay::overlay()->queueError("Screen shader parser: Failed to check screen shader path: " + ec.message());
         else
-            g_pHyprError->queueError("Screen shader parser: Screen shader path is not a regular file");
+            ErrorOverlay::overlay()->queueError("Screen shader parser: Screen shader path is not a regular file");
         return;
     }
 
     std::ifstream infile(absPath);
 
     if (!infile.good()) {
-        g_pHyprError->queueError("Screen shader parser: Failed to open screen shader");
+        ErrorOverlay::overlay()->queueError("Screen shader parser: Failed to open screen shader");
         return;
     }
 
@@ -952,9 +952,9 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
 
         // The screen shader uses the uniform
         // Since the screen shader could change every frame, damage tracking *needs* to be disabled
-        g_pHyprError->queueError(std::format("Screen shader: Screen shader uses uniform '{}', which requires debug:damage_tracking to be switched off.\n"
-                                             "WARNING:(Disabling damage tracking will *massively* increase GPU utilization!",
-                                             name));
+        ErrorOverlay::overlay()->queueError(std::format("Screen shader: Screen shader uses uniform '{}', which requires debug:damage_tracking to be switched off.\n"
+                                                        "WARNING:(Disabling damage tracking will *massively* increase GPU utilization!",
+                                                        name));
     };
 
     // Allow glitch shader to use time uniform whighout damage tracking
@@ -2253,30 +2253,33 @@ void CHyprOpenGLImpl::renderRoundedShadow(const CBox& box, int round, float roun
     shader->setUniformFloat2(SHADER_TOP_LEFT, sc<float>(TOPLEFT.x), sc<float>(TOPLEFT.y));
     shader->setUniformFloat2(SHADER_BOTTOM_RIGHT, sc<float>(BOTTOMRIGHT.x), sc<float>(BOTTOMRIGHT.y));
     shader->setUniformFloat2(SHADER_FULL_SIZE, sc<float>(FULLSIZE.x), sc<float>(FULLSIZE.y));
-    shader->setUniformFloat(SHADER_RADIUS, range + round);
+    shader->setUniformFloat(SHADER_RADIUS, round);
     shader->setUniformFloat(SHADER_ROUNDING_POWER, roundingPower);
     shader->setUniformFloat(SHADER_RANGE, range);
     shader->setUniformFloat(SHADER_SHADOW_POWER, SHADOWPOWER);
 
     glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
-    if (g_pHyprRenderer->m_renderData.clipBox.width != 0 && g_pHyprRenderer->m_renderData.clipBox.height != 0) {
-        CRegion damageClip{g_pHyprRenderer->m_renderData.clipBox.x, g_pHyprRenderer->m_renderData.clipBox.y, g_pHyprRenderer->m_renderData.clipBox.width,
-                           g_pHyprRenderer->m_renderData.clipBox.height};
-        damageClip.intersect(g_pHyprRenderer->m_renderData.damage);
+    CRegion drawRegion;
 
-        if (!damageClip.empty()) {
-            damageClip.forEachRect([this](const auto& RECT) {
-                scissor(&RECT, g_pHyprRenderer->m_renderData.transformDamage);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            });
-        }
-    } else {
-        g_pHyprRenderer->m_renderData.damage.forEachRect([this](const auto& RECT) {
+    if (g_pHyprRenderer->m_renderData.clipBox.width != 0 && g_pHyprRenderer->m_renderData.clipBox.height != 0) {
+        drawRegion = {g_pHyprRenderer->m_renderData.clipBox.x, g_pHyprRenderer->m_renderData.clipBox.y, g_pHyprRenderer->m_renderData.clipBox.width,
+                      g_pHyprRenderer->m_renderData.clipBox.height};
+        drawRegion.intersect(g_pHyprRenderer->m_renderData.damage);
+    } else
+        drawRegion = g_pHyprRenderer->m_renderData.damage;
+
+    if (g_pHyprRenderer->m_renderData.currentWindow) {
+        auto PWINDOW = g_pHyprRenderer->m_renderData.currentWindow.lock();
+        shader->setUniformFloat(SHADER_THICK, PWINDOW->getRealBorderSize() + PWINDOW->rounding());
+        drawRegion.subtract(PWINDOW->surfaceLogicalBox().value().copy().scale(g_pHyprRenderer->m_renderData.pMonitor->m_scale).expand(-PWINDOW->rounding()));
+    }
+
+    if (!drawRegion.empty())
+        drawRegion.forEachRect([this](const auto& RECT) {
             scissor(&RECT, g_pHyprRenderer->m_renderData.transformDamage);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
-    }
 
     glBindVertexArray(0);
 }

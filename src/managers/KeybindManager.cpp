@@ -22,7 +22,7 @@
 #include "../managers/animation/DesktopAnimationManager.hpp"
 #include "../managers/EventManager.hpp"
 #include "../render/Renderer.hpp"
-#include "../hyprerror/HyprError.hpp"
+#include "../errorOverlay/Overlay.hpp"
 #include "../config/ConfigManager.hpp"
 #include "../desktop/rule/windowRule/WindowRule.hpp"
 #include "../desktop/rule/Engine.hpp"
@@ -288,9 +288,9 @@ void CKeybindManager::updateXKBTranslationState() {
         fclose(KEYMAPFILE);
 
     if (!PKEYMAP) {
-        g_pHyprError->queueCreate("[Runtime Error] Invalid keyboard layout passed. ( rules: " + RULES + ", model: " + MODEL + ", variant: " + VARIANT + ", options: " + OPTIONS +
-                                      ", layout: " + LAYOUT + " )",
-                                  CHyprColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
+        ErrorOverlay::overlay()->queueCreate("[Runtime Error] Invalid keyboard layout passed. ( rules: " + RULES + ", model: " + MODEL + ", variant: " + VARIANT +
+                                                 ", options: " + OPTIONS + ", layout: " + LAYOUT + " )",
+                                             ErrorOverlay::Colors::ERROR);
 
         Log::logger->log(Log::ERR, "[XKBTranslationState] Keyboard layout {} with variant {} (rules: {}, model: {}, options: {}) couldn't have been loaded.", rules.layout,
                          rules.variant, rules.rules, rules.model, rules.options);
@@ -1033,6 +1033,9 @@ static SDispatchResult toggleActiveFloatingCore(std::string args, std::optional<
         CKeybindManager::changeMouseBindMode(MBIND_INVALID);
 
     g_layoutManager->changeFloatingMode(PWINDOW->layoutTarget());
+
+    if (PWINDOW->m_isFloating)
+        g_pCompositor->changeWindowZOrder(PWINDOW, true);
 
     if (PWINDOW->m_workspace) {
         PWINDOW->m_workspace->updateWindows();

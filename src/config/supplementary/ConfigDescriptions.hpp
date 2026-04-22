@@ -280,12 +280,6 @@ namespace Config::Supplementary {
             .data        = SConfigOptionDescription::SBoolData{false},
         },
         SConfigOptionDescription{
-            .value       = "decoration:shadow:ignore_window",
-            .description = "if true, the shadow will not be rendered behind the window itself, only around it.",
-            .type        = CONFIG_OPTION_BOOL,
-            .data        = SConfigOptionDescription::SBoolData{true},
-        },
-        SConfigOptionDescription{
             .value       = "decoration:shadow:color",
             .description = "shadow's color. Alpha dictates shadow's opacity.",
             .type        = CONFIG_OPTION_COLOR,
@@ -644,6 +638,14 @@ namespace Config::Supplementary {
             .description = "Specify if and how cursor movement should affect window focus. See the note below. [0/1/2/3]",
             .type        = CONFIG_OPTION_INT,
             .data        = SConfigOptionDescription::SRangeData{1, 0, 3},
+        },
+        SConfigOptionDescription{
+            .value = "input:follow_mouse_shrink",
+            .description =
+                "Shrinks the inactive window hitboxes used for focus detection by the specified number of pixels. This creates a dead zone in gaps between windows where "
+                "moving the cursor will not change focus. Works only with follow_mouse = 1.",
+            .type = CONFIG_OPTION_INT,
+            .data = SConfigOptionDescription::SRangeData{0, 0, 300},
         },
         SConfigOptionDescription{
             .value       = "input:follow_mouse_threshold",
