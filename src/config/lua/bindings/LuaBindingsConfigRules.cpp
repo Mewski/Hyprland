@@ -37,6 +37,7 @@
 #include "../../../managers/input/trackpad/gestures/MoveGesture.hpp"
 #include "../../../managers/input/trackpad/gestures/ResizeGesture.hpp"
 #include "../../../managers/input/trackpad/gestures/SpecialWorkspaceGesture.hpp"
+#include "../../../managers/input/trackpad/gestures/ScrollMoveGesture.hpp"
 #include "../../../managers/input/trackpad/gestures/WorkspaceSwipeGesture.hpp"
 #include "../../../managers/permissions/DynamicPermissionManager.hpp"
 
@@ -841,8 +842,10 @@ static int hlGesture(lua_State* L) {
             result = g_pTrackpadGestures->addGesture(makeUnique<CFloatTrackpadGesture>(mode), fingerCount, direction, modMask, deltaScale, disableInhibit);
         else if (action == "fullscreen")
             result = g_pTrackpadGestures->addGesture(makeUnique<CFullscreenTrackpadGesture>(mode), fingerCount, direction, modMask, deltaScale, disableInhibit);
-        else if (action == "cursorZoom")
+        else if (action == "cursor_zoom" || action == "cursorZoom")
             result = g_pTrackpadGestures->addGesture(makeUnique<CCursorZoomTrackpadGesture>(zoomLevel, mode), fingerCount, direction, modMask, deltaScale, disableInhibit);
+        else if (action == "scroll_move")
+            result = g_pTrackpadGestures->addGesture(makeUnique<CScrollMoveTrackpadGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
         else if (action == "unset")
             result = g_pTrackpadGestures->removeGesture(fingerCount, direction, modMask, deltaScale, disableInhibit);
         else

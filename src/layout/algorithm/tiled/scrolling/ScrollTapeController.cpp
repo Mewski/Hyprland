@@ -1,7 +1,7 @@
 #include "ScrollTapeController.hpp"
 #include "ScrollingAlgorithm.hpp"
 #include "../../../../config/ConfigValue.hpp"
-#include "../../../../managers/input/UnifiedScrollingSwipeGesture.hpp"
+#include "../../../../managers/input/trackpad/gestures/ScrollMoveGesture.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -200,7 +200,7 @@ double CScrollTapeController::calculateCameraOffset(const CBox& usableArea, bool
     const double usablePrimary = getPrimary(usableArea.size());
 
     // don't adjust the offset if we are dragging or swiping
-    if (isBeingDragged() || g_pUnifiedScrollingSwipe->isGestureInProgress())
+    if (isBeingDragged() || CScrollMoveTrackpadGesture::isGestureInProgress())
         return m_offset;
 
     // if the content fits in viewport, center it

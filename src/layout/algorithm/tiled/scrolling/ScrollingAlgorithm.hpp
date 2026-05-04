@@ -109,9 +109,20 @@ namespace Layout::Tiled {
         virtual void                    swapTargets(SP<ITarget> a, SP<ITarget> b);
         virtual void                    moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent);
 
+        void                            moveTapeNormalized(double delta);
+        void                            snapToGrid();
+        SP<SColumnData>                 snapToProjectedOffset(double projectedNormalizedOffset);
+        void                            focusColumn(SP<SColumnData> column);
+        SP<SColumnData>                 getColumnAtViewportCenter();
+        SP<SColumnData>                 currentColumn();
+        double                          primaryViewportSize();
+        double                          normalizedTapeOffset();
+
         CBox                            usableArea();
-        SP<SScrollingData>              scrollingData() const { return m_scrollingData; }
-        SP<SScrollingTargetData>        dataFor(SP<ITarget> t);
+        SP<SScrollingData>              scrollingData() const {
+            return m_scrollingData;
+        }
+        SP<SScrollingTargetData> dataFor(SP<ITarget> t);
 
         enum eInputMode : uint8_t {
             INPUT_MODE_SOFT = 0,
