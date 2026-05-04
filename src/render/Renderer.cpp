@@ -23,7 +23,6 @@
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/DRMSyncobj.hpp"
 #include "../protocols/LinuxDMABUF.hpp"
-#include "../helpers/sync/SyncTimeline.hpp"
 #include "../errorOverlay/Overlay.hpp"
 #include "../debug/Overlay.hpp"
 #include "../notification/NotificationOverlay.hpp"
@@ -36,7 +35,6 @@
 #include "../helpers/MainLoopExecutor.hpp"
 #include "../helpers/Monitor.hpp"
 #include "macros.hpp"
-#include "../managers/screenshare/ScreenshareManager.hpp"
 #include "pass/TexPassElement.hpp"
 #include "pass/ClearPassElement.hpp"
 #include "pass/RectPassElement.hpp"
@@ -45,7 +43,6 @@
 #include "../debug/log/Logger.hpp"
 #include "../protocols/ColorManagement.hpp"
 #include "../protocols/types/ContentType.hpp"
-#include "../helpers/MiscFunctions.hpp"
 #include "AsyncResourceGatherer.hpp"
 #include "ElementRenderer.hpp"
 #include "Framebuffer.hpp"
@@ -68,6 +65,7 @@ using namespace Hyprutils::Utils;
 using namespace Hyprutils::OS;
 using enum NContentType::eContentType;
 using namespace NColorManagement;
+using namespace Desktop::View;
 using namespace Render;
 
 extern "C" {
@@ -178,7 +176,7 @@ IHyprRenderer::IHyprRenderer() {
     m_renderUnfocusedTimer = makeShared<CEventLoopTimer>(
         std::nullopt,
         [this](SP<CEventLoopTimer> self, void* data) {
-            static auto PFPS = CConfigValue<Hyprlang::INT>("misc:render_unfocused_fps");
+            static auto PFPS = CConfigValue<Config::INTEGER>("misc:render_unfocused_fps");
 
             if (m_renderUnfocused.empty())
                 return;
@@ -234,8 +232,8 @@ bool IHyprRenderer::shouldRenderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor) {
         return true;
 
     // if the window is being moved to a workspace that is not invisible, and the alpha is > 0.F, render it.
-    if (pWindow->m_monitorMovedFrom != -1 && pWindow->m_movingToWorkspaceAlpha->isBeingAnimated() && pWindow->m_movingToWorkspaceAlpha->value() > 0.F && pWindow->m_workspace &&
-        !pWindow->m_workspace->isVisible())
+    if (pWindow->m_monitorMovedFrom != -1 && pWindow->alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->isBeingAnimated() && pWindow->alphaValue(WINDOW_ALPHA_MOVE_TO_WORKSPACE) > 0.F &&
+        pWindow->m_workspace && !pWindow->m_workspace->isVisible())
         return true;
 
     const auto PWINDOWWORKSPACE = pWindow->m_workspace;
@@ -244,7 +242,8 @@ bool IHyprRenderer::shouldRenderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor) {
             return true;
 
         // if hidden behind fullscreen
-        if (PWINDOWWORKSPACE->m_hasFullscreenWindow && !pWindow->isFullscreen() && (!pWindow->m_isFloating || !pWindow->m_createdOverFullscreen) && pWindow->m_alpha->value() == 0)
+        if (PWINDOWWORKSPACE->m_hasFullscreenWindow && !pWindow->isAllowedOverFullscreen() &&
+            pWindow->alphaValue(WINDOW_ALPHA_FADE) * pWindow->alphaValue(WINDOW_ALPHA_FULLSCREEN) == 0)
             return false;
 
         if (!PWINDOWWORKSPACE->m_renderOffset->isBeingAnimated() && !PWINDOWWORKSPACE->m_alpha->isBeingAnimated() && !PWINDOWWORKSPACE->isVisible())
@@ -325,7 +324,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
         if (!shouldRenderWindow(w, pMonitor))
             continue;
 
-        if (w->m_alpha->value() == 0.f)
+        if (w->alphaValue(WINDOW_ALPHA_FADE) * w->alphaValue(WINDOW_ALPHA_FULLSCREEN) == 0.f)
             continue;
 
         if (w->isFullscreen())
@@ -355,6 +354,9 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
 
         if (pWorkspace->m_isSpecialWorkspace && w->m_monitor != pWorkspace->m_monitor)
             continue; // special on another are rendered as a part of the base pass
+
+        if (w->isFadingOutUnderFullscreen())
+            continue; // render these over fullscreen so the fade-out is visible
 
         renderWindow(w, pMonitor, time, true, RENDER_PASS_ALL);
     }
@@ -394,8 +396,8 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
 
     // then render windows over fullscreen.
     for (auto const& w : g_pCompositor->m_windows) {
-        const bool shouldSkipWindow = w->workspaceID() != pWorkspaceWindow->workspaceID() || !w->m_isFloating || (!w->m_createdOverFullscreen && !w->m_pinned) ||
-            (!w->m_isMapped && !w->m_fadingOut) || w->isFullscreen();
+        const bool shouldSkipWindow =
+            w->workspaceID() != pWorkspaceWindow->workspaceID() || !w->m_isFloating || !w->shouldRenderOverFullscreen() || (!w->m_isMapped && !w->m_fadingOut) || w->isFullscreen();
 
         if (shouldSkipWindow)
             continue;
@@ -527,6 +529,9 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
     if (pWindow->isHidden() && !standalone)
         return;
 
+    if (!standalone && pWindow->effectiveAlpha() == 0.F && !pWindow->m_alpha.isBeingAnimated())
+        return;
+
     if (pWindow->m_fadingOut) {
         if (pMonitor == pWindow->m_monitor) // TODO: fix this
             renderSnapshot(pWindow);
@@ -540,7 +545,7 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
 
     const auto                       PWORKSPACE = pWindow->m_workspace;
     const auto                       REALPOS    = pWindow->m_realPosition->value() + (pWindow->m_pinned ? Vector2D{} : PWORKSPACE->m_renderOffset->value());
-    static auto                      PDIMAROUND = CConfigValue<Hyprlang::FLOAT>("decoration:dim_around");
+    static auto                      PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
 
     CSurfacePassElement::SRenderData renderdata = {pMonitor, time};
     CBox                             textureBox = {REALPOS.x, REALPOS.y, std::max(pWindow->m_realSize->value().x, 5.0), std::max(pWindow->m_realSize->value().y, 5.0)};
@@ -569,9 +574,10 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
 
     renderdata.surface   = pWindow->wlSurface()->resource();
     renderdata.dontRound = pWindow->isEffectiveInternalFSMode(FSMODE_FULLSCREEN);
-    renderdata.fadeAlpha = pWindow->m_alpha->value() * (pWindow->m_pinned || USE_WORKSPACE_FADE_ALPHA ? 1.f : PWORKSPACE->m_alpha->value()) *
-        (USE_WORKSPACE_FADE_ALPHA ? pWindow->m_movingToWorkspaceAlpha->value() : 1.F) * pWindow->m_movingFromWorkspaceAlpha->value();
-    renderdata.alpha         = pWindow->m_activeInactiveAlpha->value();
+    renderdata.fadeAlpha = pWindow->alphaValue(WINDOW_ALPHA_FADE) * pWindow->alphaValue(WINDOW_ALPHA_FULLSCREEN) * pWindow->alphaValue(WINDOW_ALPHA_LAYOUT) *
+        (pWindow->m_pinned || USE_WORKSPACE_FADE_ALPHA ? 1.f : PWORKSPACE->m_alpha->value()) *
+        (USE_WORKSPACE_FADE_ALPHA ? pWindow->alphaValue(WINDOW_ALPHA_MOVE_TO_WORKSPACE) : 1.F) * pWindow->alphaValue(WINDOW_ALPHA_MOVE_FROM_WORKSPACE);
+    renderdata.alpha         = pWindow->alphaValue(WINDOW_ALPHA_ACTIVE);
     renderdata.decorate      = decorate && !pWindow->m_X11DoesntWantBorders && !pWindow->isEffectiveInternalFSMode(FSMODE_FULLSCREEN);
     renderdata.rounding      = standalone || renderdata.dontRound ? 0 : pWindow->rounding() * pMonitor->m_scale;
     renderdata.roundingPower = standalone || renderdata.dontRound ? 2.0f : pWindow->roundingPower();
@@ -643,7 +649,7 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
             }
         }
 
-        static auto PXWLUSENN = CConfigValue<Hyprlang::INT>("xwayland:use_nearest_neighbor");
+        static auto PXWLUSENN = CConfigValue<Config::INTEGER>("xwayland:use_nearest_neighbor");
         if ((pWindow->m_isX11 && *PXWLUSENN) || pWindow->m_ruleApplicator->nearestNeighbor().valueOrDefault())
             renderdata.useNearestNeighbor = true;
 
@@ -713,7 +719,7 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
             renderdata.squishOversized = false; // don't squish popups
             renderdata.popup           = true;
 
-            static CConfigValue PBLURIGNOREA = CConfigValue<Hyprlang::FLOAT>("decoration:blur:popups_ignorealpha");
+            static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
 
             renderdata.blur = shouldBlur(pWindow->m_popupHead);
 
@@ -837,8 +843,8 @@ UP<CScopeGuard> IHyprRenderer::bindTempFB(SP<IFramebuffer> fb) {
 }
 
 bool IHyprRenderer::preBlurQueued(PHLMONITORREF pMonitor) {
-    static auto PBLURNEWOPTIMIZE = CConfigValue<Hyprlang::INT>("decoration:blur:new_optimizations");
-    static auto PBLUR            = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
+    static auto PBLURNEWOPTIMIZE = CConfigValue<Config::INTEGER>("decoration:blur:new_optimizations");
+    static auto PBLUR            = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
 
     if (!pMonitor)
         return false;
@@ -898,7 +904,7 @@ void IHyprRenderer::renderLayer(PHLLS pLayer, PHLMONITOR pMonitor, const Time::s
         (lockscreen && !pLayer->m_ruleApplicator->aboveLock().valueOrDefault()))
         return;
 
-    static auto PDIMAROUND = CConfigValue<Hyprlang::FLOAT>("decoration:dim_around");
+    static auto PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
 
     if (*PDIMAROUND && pLayer->m_ruleApplicator->dimAround().valueOrDefault() && !m_bRenderingSnapshot && !popups) {
         CRectPassElement::SRectData data;
@@ -1001,9 +1007,9 @@ void IHyprRenderer::renderIMEPopup(CInputPopup* pPopup, PHLMONITOR pMonitor, con
     renderdata.w        = SURF->m_current.size.x;
     renderdata.h        = SURF->m_current.size.y;
 
-    static auto PBLUR        = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
-    static auto PBLURIMES    = CConfigValue<Hyprlang::INT>("decoration:blur:input_methods");
-    static auto PBLURIGNOREA = CConfigValue<Hyprlang::FLOAT>("decoration:blur:input_methods_ignorealpha");
+    static auto PBLUR        = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+    static auto PBLURIMES    = CConfigValue<Config::INTEGER>("decoration:blur:input_methods");
+    static auto PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:input_methods_ignorealpha");
 
     renderdata.blur = *PBLURIMES && *PBLUR;
     if (renderdata.blur) {
@@ -1057,11 +1063,11 @@ void IHyprRenderer::renderSessionLockSurface(WP<SSessionLockSurface> pSurface, P
 }
 
 void IHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& time, const Vector2D& translate, const float& scale) {
-    static auto PDIMSPECIAL      = CConfigValue<Hyprlang::FLOAT>("decoration:dim_special");
-    static auto PBLURSPECIAL     = CConfigValue<Hyprlang::INT>("decoration:blur:special");
-    static auto PBLUR            = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
-    static auto PXPMODE          = CConfigValue<Hyprlang::INT>("render:xp_mode");
-    static auto PSESSIONLOCKXRAY = CConfigValue<Hyprlang::INT>("misc:session_lock_xray");
+    static auto PDIMSPECIAL      = CConfigValue<Config::FLOAT>("decoration:dim_special");
+    static auto PBLURSPECIAL     = CConfigValue<Config::INTEGER>("decoration:blur:special");
+    static auto PBLUR            = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+    static auto PXPMODE          = CConfigValue<Config::INTEGER>("render:xp_mode");
+    static auto PSESSIONLOCKXRAY = CConfigValue<Config::INTEGER>("misc:session_lock_xray");
 
     if UNLIKELY (!pMonitor)
         return;
@@ -1228,9 +1234,58 @@ SP<ITexture> IHyprRenderer::getBackground(PHLMONITOR pMonitor) {
 
     Log::logger->log(Log::DEBUG, "Creating a texture for BGTex");
     SP<ITexture> backgroundTexture = createTexture(m_backgroundResource->m_asset.cairoSurface->cairo());
-    if (!backgroundTexture->ok())
+
+    if (!backgroundTexture || !backgroundTexture->ok())
         return nullptr;
-    Log::logger->log(Log::DEBUG, "Background created for monitor {}", pMonitor->m_name);
+
+    Log::logger->log(Log::DEBUG, "BGTex created for monitor {}", pMonitor->m_name);
+
+    const int monW  = (int)std::round(pMonitor->m_transformedSize.x);
+    const int monH  = (int)std::round(pMonitor->m_transformedSize.y);
+    const int origW = backgroundTexture->m_size.x;
+    const int origH = backgroundTexture->m_size.y;
+
+    if (monW > 0 && monH > 0) {
+        const double scaleX = (double)monW / origW;
+        const double scaleY = (double)monH / origH;
+        const double scale  = std::max(scaleX, scaleY);
+
+        // scale the background if it's larger than the monitor
+        if (scale < 1.0) {
+            auto fb = createFB("BGTex scale");
+            fb->alloc(monW, monH);
+
+            auto       guard = bindTempFB(fb);
+
+            const auto oldProjType     = m_renderData.projectionType;
+            const auto oldFbSize       = m_renderData.fbSize;
+            const auto oldTransformDmg = m_renderData.transformDamage;
+
+            m_renderData.fbSize = Vector2D{monW, monH};
+            setProjectionType(RPT_EXPORT);
+            m_renderData.transformDamage = false;
+            setViewport(0, 0, monW, monH);
+
+            draw(CClearPassElement::SClearData{{0.F, 0.F, 0.F, 0.F}});
+
+            const double texW = origW * scale;
+            const double texH = origH * scale;
+            const double offX = (monW - texW) / 2.0;
+            const double offY = (monH - texH) / 2.0;
+
+            CRegion      fullDamage = {0, 0, monW, monH};
+            draw(CTexPassElement::SRenderData{.tex = backgroundTexture, .box = CBox{offX, offY, texW, texH}, .damage = fullDamage}, fullDamage);
+
+            m_renderData.fbSize          = oldFbSize;
+            m_renderData.transformDamage = oldTransformDmg;
+            setProjectionType(oldProjType);
+            setViewport(0, 0, (int)pMonitor->m_pixelSize.x, (int)pMonitor->m_pixelSize.y);
+
+            backgroundTexture = fb->getTexture();
+
+            Log::logger->log(Log::INFO, "BGTex scaled from {}x{} to {}x{} for monitor {}", origW, origH, monW, monH, pMonitor->m_name);
+        }
+    }
 
     // clear the resource after we're done using it
     g_pEventLoopManager->doLater([this] { m_backgroundResource.reset(); });
@@ -1243,15 +1298,15 @@ SP<ITexture> IHyprRenderer::getBackground(PHLMONITOR pMonitor) {
 }
 
 void IHyprRenderer::renderBackground(PHLMONITOR pMonitor) {
-    static auto PRENDERTEX       = CConfigValue<Hyprlang::INT>("misc:disable_hyprland_logo");
-    static auto PBACKGROUNDCOLOR = CConfigValue<Hyprlang::INT>("misc:background_color");
-    static auto PNOSPLASH        = CConfigValue<Hyprlang::INT>("misc:disable_splash_rendering");
+    static auto PRENDERTEX       = CConfigValue<Config::INTEGER>("misc:disable_hyprland_logo");
+    static auto PBACKGROUNDCOLOR = CConfigValue<Config::INTEGER>("misc:background_color");
+    static auto PNOSPLASH        = CConfigValue<Config::INTEGER>("misc:disable_splash_rendering");
 
     if (*PRENDERTEX /* inverted cfg flag */ || pMonitor->m_backgroundOpacity->isBeingAnimated())
         m_renderPass.add(makeUnique<CClearPassElement>(CClearPassElement::SClearData{CHyprColor(*PBACKGROUNDCOLOR)}));
 
     if (!*PRENDERTEX) {
-        static auto PBACKGROUNDCOLOR = CConfigValue<Hyprlang::INT>("misc:background_color");
+        static auto PBACKGROUNDCOLOR = CConfigValue<Config::INTEGER>("misc:background_color");
 
         if (!pMonitor->m_background)
             pMonitor->m_background = getBackground(pMonitor);
@@ -1302,8 +1357,8 @@ void IHyprRenderer::requestBackgroundResource() {
     if (m_backgroundResource)
         return;
 
-    static auto PNOWALLPAPER    = CConfigValue<Hyprlang::INT>("misc:disable_hyprland_logo");
-    static auto PFORCEWALLPAPER = CConfigValue<Hyprlang::INT>("misc:force_default_wallpaper");
+    static auto PNOWALLPAPER    = CConfigValue<Config::INTEGER>("misc:disable_hyprland_logo");
+    static auto PFORCEWALLPAPER = CConfigValue<Config::INTEGER>("misc:force_default_wallpaper");
 
     const auto  FORCEWALLPAPER = std::clamp(*PFORCEWALLPAPER, sc<int64_t>(-1), sc<int64_t>(2));
 
@@ -1400,8 +1455,8 @@ SP<ITexture> IHyprRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
 }
 
 bool IHyprRenderer::shouldUseNewBlurOptimizations(PHLLS pLayer, PHLWINDOW pWindow) {
-    static auto PBLURNEWOPTIMIZE = CConfigValue<Hyprlang::INT>("decoration:blur:new_optimizations");
-    static auto PBLURXRAY        = CConfigValue<Hyprlang::INT>("decoration:blur:xray");
+    static auto PBLURNEWOPTIMIZE = CConfigValue<Config::INTEGER>("decoration:blur:new_optimizations");
+    static auto PBLURXRAY        = CConfigValue<Config::INTEGER>("decoration:blur:xray");
 
     if (!getBlurTexture(m_renderData.pMonitor))
         return false;
@@ -1483,9 +1538,10 @@ SP<ITexture> IHyprRenderer::renderText(const std::string& text, CHyprColor col, 
         pango_layout_set_ellipsize(layoutText, PANGO_ELLIPSIZE_END);
     }
 
-    pango_layout_get_size(layoutText, &textW, &textH);
-    textW /= PANGO_SCALE;
-    textH /= PANGO_SCALE;
+    PangoRectangle rectInk = {}, rectLog = {};
+    pango_layout_get_pixel_extents(layoutText, &rectInk, &rectLog);
+    textW = std::max(rectLog.width, rectInk.x + rectInk.width);
+    textH = std::max(rectLog.height, rectInk.y + rectInk.height);
 
     pango_font_description_free(pangoFD);
     g_object_unref(layoutText);
@@ -1596,7 +1652,7 @@ void IHyprRenderer::renderLockscreen(PHLMONITOR pMonitor, const Time::steady_tp&
 }
 
 void IHyprRenderer::renderSessionLockPrimer(PHLMONITOR pMonitor) {
-    static auto PSESSIONLOCKXRAY = CConfigValue<Hyprlang::INT>("misc:session_lock_xray");
+    static auto PSESSIONLOCKXRAY = CConfigValue<Config::INTEGER>("misc:session_lock_xray");
     if (*PSESSIONLOCKXRAY)
         return;
 
@@ -1904,11 +1960,11 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     static std::chrono::high_resolution_clock::time_point renderStartOverlay = std::chrono::high_resolution_clock::now();
     static std::chrono::high_resolution_clock::time_point endRenderOverlay   = std::chrono::high_resolution_clock::now();
 
-    static auto                                           PDEBUGOVERLAY       = CConfigValue<Hyprlang::INT>("debug:overlay");
-    static auto                                           PDAMAGETRACKINGMODE = CConfigValue<Hyprlang::INT>("debug:damage_tracking");
-    static auto                                           PDAMAGEBLINK        = CConfigValue<Hyprlang::INT>("debug:damage_blink");
-    static auto                                           PSOLDAMAGE          = CConfigValue<Hyprlang::INT>("debug:render_solitary_wo_damage");
-    static auto                                           PVFR                = CConfigValue<Hyprlang::INT>("debug:vfr");
+    static auto                                           PDEBUGOVERLAY       = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto                                           PDAMAGETRACKINGMODE = CConfigValue<Config::INTEGER>("debug:damage_tracking");
+    static auto                                           PDAMAGEBLINK        = CConfigValue<Config::INTEGER>("debug:damage_blink");
+    static auto                                           PSOLDAMAGE          = CConfigValue<Config::INTEGER>("debug:render_solitary_wo_damage");
+    static auto                                           PVFR                = CConfigValue<Config::INTEGER>("debug:vfr");
 
     static int                                            damageBlinkCleanup = 0; // because double-buffered
 
@@ -2135,8 +2191,9 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     Event::bus()->m_events.render.stage.emit(RENDER_POST);
 
     pMonitor->m_output->state->addDamage(frameDamage);
-    pMonitor->m_output->state->setPresentationMode(shouldTear ? Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_IMMEDIATE :
-                                                                Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_VSYNC);
+    auto presentationMode = shouldTear ? Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_IMMEDIATE : Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_VSYNC;
+    if (pMonitor->m_output->state->state().presentationMode != presentationMode)
+        pMonitor->m_output->state->setPresentationMode(presentationMode);
 
     if (commit)
         commitPendingAndDoExplicitSync(pMonitor);
@@ -2210,10 +2267,10 @@ static hdr_output_metadata       createHDRMetadata(SImageDescription settings, S
 }
 
 void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
-    static auto PCT        = CConfigValue<Hyprlang::INT>("render:send_content_type");
-    static auto PAUTOHDR   = CConfigValue<Hyprlang::INT>("render:cm_auto_hdr");
-    static auto PNONSHADER = CConfigValue<Hyprlang::INT>("render:non_shader_cm");
-    static auto PNSINTEROP = CConfigValue<Hyprlang::INT>("render:non_shader_cm_interop");
+    static auto PCT        = CConfigValue<Config::INTEGER>("render:send_content_type");
+    static auto PAUTOHDR   = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
+    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    static auto PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
 
     const bool  configuredHDR = (pMonitor->m_cmType == NCMType::CM_HDR_EDID || pMonitor->m_cmType == NCMType::CM_HDR);
     bool        wantHDR       = configuredHDR;
@@ -2628,7 +2685,7 @@ void IHyprRenderer::damageSurface(SP<CWLSurfaceResource> pSurface, double x, dou
         m->addDamage(damageBoxForEach);
     }
 
-    static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
+    static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
 
     if (*PLOGDAMAGE)
         Log::logger->log(Log::DEBUG, "Damage: Surface (extents): xy: {}, {} wh: {}, {}", damageBox.pixman()->extents.x1, damageBox.pixman()->extents.y1,
@@ -2653,7 +2710,7 @@ void IHyprRenderer::damageWindow(PHLWINDOW pWindow, bool forceFull) {
         }
     }
 
-    static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
+    static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
 
     if (*PLOGDAMAGE)
         Log::logger->log(Log::DEBUG, "Damage: Window ({}): xy: {}, {} wh: {}, {}", pWindow->m_title, windowBox.x, windowBox.y, windowBox.width, windowBox.height);
@@ -2666,7 +2723,7 @@ void IHyprRenderer::damageMonitor(PHLMONITOR pMonitor) {
     CBox damageBox = {0, 0, INT16_MAX, INT16_MAX};
     pMonitor->addDamage(damageBox);
 
-    static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
+    static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
 
     if (*PLOGDAMAGE)
         Log::logger->log(Log::DEBUG, "Damage: Monitor {}", pMonitor->m_name);
@@ -2686,7 +2743,7 @@ void IHyprRenderer::damageBox(const CBox& box, bool skipFrameSchedule) {
         }
     }
 
-    static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
+    static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
 
     if (*PLOGDAMAGE)
         Log::logger->log(Log::DEBUG, "Damage: Box: xy: {}, {} wh: {}, {}", box.x, box.y, box.w, box.h);
@@ -2795,11 +2852,11 @@ void IHyprRenderer::setCursorFromName(const std::string& name, bool force) {
 }
 
 void IHyprRenderer::ensureCursorRenderingMode() {
-    static auto PINVISIBLE     = CConfigValue<Hyprlang::INT>("cursor:invisible");
-    static auto PCURSORTIMEOUT = CConfigValue<Hyprlang::FLOAT>("cursor:inactive_timeout");
-    static auto PHIDEONTOUCH   = CConfigValue<Hyprlang::INT>("cursor:hide_on_touch");
-    static auto PHIDEONTABLET  = CConfigValue<Hyprlang::INT>("cursor:hide_on_tablet");
-    static auto PHIDEONKEY     = CConfigValue<Hyprlang::INT>("cursor:hide_on_key_press");
+    static auto PINVISIBLE     = CConfigValue<Config::INTEGER>("cursor:invisible");
+    static auto PCURSORTIMEOUT = CConfigValue<Config::FLOAT>("cursor:inactive_timeout");
+    static auto PHIDEONTOUCH   = CConfigValue<Config::INTEGER>("cursor:hide_on_touch");
+    static auto PHIDEONTABLET  = CConfigValue<Config::INTEGER>("cursor:hide_on_tablet");
+    static auto PHIDEONKEY     = CConfigValue<Config::INTEGER>("cursor:hide_on_key_press");
 
     if (*PCURSORTIMEOUT <= 0)
         m_cursorHiddenConditions.hiddenOnTimeout = false;
@@ -2953,7 +3010,7 @@ bool IHyprRenderer::isMgpu() {
 }
 
 void IHyprRenderer::addWindowToRenderUnfocused(PHLWINDOW window) {
-    static auto PFPS = CConfigValue<Hyprlang::INT>("misc:render_unfocused_fps");
+    static auto PFPS = CConfigValue<Config::INTEGER>("misc:render_unfocused_fps");
 
     if (*PFPS <= 0)
         return;
@@ -3114,7 +3171,7 @@ void IHyprRenderer::makeSnapshot(WP<Desktop::View::CPopup> popup) {
 }
 
 void IHyprRenderer::renderSnapshot(PHLWINDOW pWindow) {
-    static auto  PDIMAROUND = CConfigValue<Hyprlang::FLOAT>("decoration:dim_around");
+    static auto  PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
 
     PHLWINDOWREF ref{pWindow};
 
@@ -3144,8 +3201,9 @@ void IHyprRenderer::renderSnapshot(PHLWINDOW pWindow) {
     if (*PDIMAROUND && pWindow->m_ruleApplicator->dimAround().valueOrDefault()) {
         CRectPassElement::SRectData data;
 
-        data.box   = {0, 0, m_renderData.pMonitor->m_pixelSize.x, m_renderData.pMonitor->m_pixelSize.y};
-        data.color = CHyprColor(0, 0, 0, *PDIMAROUND * pWindow->m_alpha->value());
+        data.box = {0, 0, m_renderData.pMonitor->m_pixelSize.x, m_renderData.pMonitor->m_pixelSize.y};
+        data.color =
+            CHyprColor(0, 0, 0, *PDIMAROUND * pWindow->alphaValue(WINDOW_ALPHA_FADE) * pWindow->alphaValue(WINDOW_ALPHA_FULLSCREEN) * pWindow->alphaValue(WINDOW_ALPHA_LAYOUT));
 
         m_renderPass.add(makeUnique<CRectPassElement>(data));
     }
@@ -3155,7 +3213,8 @@ void IHyprRenderer::renderSnapshot(PHLWINDOW pWindow) {
         data.box           = CBox{pWindow->m_realPosition->value(), pWindow->m_realSize->value()}.translate(-PMONITOR->m_position).scale(PMONITOR->m_scale).round();
         data.color         = CHyprColor{0, 0, 0, 0};
         data.blur          = true;
-        data.blurA         = sqrt(pWindow->m_alpha->value()); // sqrt makes the blur fadeout more realistic.
+        data.blurA         = sqrt(pWindow->alphaValue(WINDOW_ALPHA_FADE) * pWindow->alphaValue(WINDOW_ALPHA_FULLSCREEN) *
+                                  pWindow->alphaValue(WINDOW_ALPHA_LAYOUT)); // sqrt makes the blur fadeout more realistic.
         data.round         = pWindow->rounding();
         data.roundingPower = pWindow->roundingPower();
         data.xray          = pWindow->m_ruleApplicator->xray().valueOr(false);
@@ -3167,7 +3226,7 @@ void IHyprRenderer::renderSnapshot(PHLWINDOW pWindow) {
     data.flipEndFrame = true;
     data.tex          = FBDATA->getTexture();
     data.box          = windowBox;
-    data.a            = pWindow->m_alpha->value();
+    data.a            = pWindow->alphaValue(WINDOW_ALPHA_FADE) * pWindow->alphaValue(WINDOW_ALPHA_FULLSCREEN) * pWindow->alphaValue(WINDOW_ALPHA_LAYOUT);
     data.damage       = fakeDamage;
 
     m_renderPass.add(makeUnique<CTexPassElement>(std::move(data)));
@@ -3219,7 +3278,7 @@ void IHyprRenderer::renderSnapshot(WP<Desktop::View::CPopup> popup) {
     if (!popup->m_snapshotFB)
         return;
 
-    static CConfigValue PBLURIGNOREA = CConfigValue<Hyprlang::FLOAT>("decoration:blur:popups_ignorealpha");
+    static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
 
     const auto          FBDATA = popup->m_snapshotFB;
 
@@ -3269,7 +3328,7 @@ bool IHyprRenderer::shouldBlur(PHLLS ls) {
     if (m_bRenderingSnapshot)
         return false;
 
-    static auto PBLUR = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
+    static auto PBLUR = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
     return *PBLUR && ls->m_ruleApplicator->blur().valueOrDefault();
 }
 
@@ -3277,21 +3336,21 @@ bool IHyprRenderer::shouldBlur(PHLWINDOW w) {
     if (m_bRenderingSnapshot)
         return false;
 
-    static auto PBLUR     = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
+    static auto PBLUR     = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
     const bool  DONT_BLUR = w->m_ruleApplicator->noBlur().valueOrDefault() || w->m_ruleApplicator->RGBX().valueOrDefault() || w->opaque();
     return *PBLUR && !DONT_BLUR;
 }
 
 bool IHyprRenderer::shouldBlur(WP<Desktop::View::CPopup> p) {
-    static CConfigValue PBLURPOPUPS = CConfigValue<Hyprlang::INT>("decoration:blur:popups");
-    static CConfigValue PBLUR       = CConfigValue<Hyprlang::INT>("decoration:blur:enabled");
+    static CConfigValue PBLURPOPUPS = CConfigValue<Config::INTEGER>("decoration:blur:popups");
+    static CConfigValue PBLUR       = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
 
     return *PBLURPOPUPS && *PBLUR;
 }
 
 SP<ITexture> IHyprRenderer::renderSplash(const std::function<SP<ITexture>(const int, const int, unsigned char* const)>& handleData, const int fontSize, const int maxWidth,
                                          const int maxHeight) {
-    static auto PSPLASHCOLOR = CConfigValue<Hyprlang::INT>("misc:col.splash");
+    static auto PSPLASHCOLOR = CConfigValue<Config::INTEGER>("misc:col.splash");
     static auto PSPLASHFONT  = CConfigValue<std::string>("misc:splash_font_family");
     static auto FALLBACKFONT = CConfigValue<std::string>("misc:font_family");
 

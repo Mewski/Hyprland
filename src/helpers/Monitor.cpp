@@ -7,12 +7,10 @@
 #include "../protocols/ColorManagement.hpp"
 #include "../Compositor.hpp"
 #include "../config/ConfigValue.hpp"
-#include "../config/ConfigManager.hpp"
 #include "../config/shared/monitor/MonitorRuleManager.hpp"
 #include "../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "../config/shared/animation/AnimationTree.hpp"
 #include "../protocols/GammaControl.hpp"
-#include "../devices/ITouch.hpp"
 #include "../protocols/LayerShell.hpp"
 #include "../protocols/PresentationTime.hpp"
 #include "../protocols/DRMLease.hpp"
@@ -34,7 +32,6 @@
 #include "../layout/LayoutManager.hpp"
 #include "../i18n/Engine.hpp"
 #include "../helpers/cm/ColorManagement.hpp"
-#include "sync/SyncTimeline.hpp"
 #include "time/Time.hpp"
 #include "../desktop/view/LayerSurface.hpp"
 #include "../desktop/state/FocusState.hpp"
@@ -65,7 +62,7 @@ using namespace Monitor;
 CMonitor::CMonitor(SP<Aquamarine::IOutput> output_) : m_state(this), m_output(output_), m_imageDescription(getDefaultImageDescription()) {
     g_pAnimationManager->createAnimation(0.f, m_specialFade, Config::animationTree()->getAnimationPropertyConfig("specialWorkspaceIn"), AVARDAMAGE_NONE);
     m_specialFade->setUpdateCallback([this](auto) { g_pHyprRenderer->damageMonitor(m_self.lock()); });
-    static auto PZOOMFACTOR = CConfigValue<Hyprlang::FLOAT>("cursor:zoom_factor");
+    static auto PZOOMFACTOR = CConfigValue<Config::FLOAT>("cursor:zoom_factor");
     g_pAnimationManager->createAnimation(*PZOOMFACTOR, m_cursorZoom, Config::animationTree()->getAnimationPropertyConfig("zoomFactor"), AVARDAMAGE_NONE);
     m_cursorZoom->setUpdateCallback([this](auto) { g_pHyprRenderer->damageMonitor(m_self.lock()); });
     g_pAnimationManager->createAnimation(0.F, m_zoomAnimProgress, Config::animationTree()->getAnimationPropertyConfig("monitorAdded"), AVARDAMAGE_NONE);
@@ -625,7 +622,7 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
 
 bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force) {
 
-    static auto PDISABLESCALECHECKS = CConfigValue<Hyprlang::INT>("debug:disable_scale_checks");
+    static auto PDISABLESCALECHECKS = CConfigValue<Config::INTEGER>("debug:disable_scale_checks");
 
     Log::logger->log(Log::DEBUG, "Applying monitor rule for {}", m_name);
 
@@ -799,9 +796,10 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force)
         }
     }
 
-    const auto WAS10B  = m_enabled10bit;
-    const auto OLDRES  = m_pixelSize;
-    bool       success = false;
+    const auto WAS10B             = m_enabled10bit;
+    const auto OLDPIXELSIZE       = m_pixelSize;
+    const auto OLDTRANSFORMEDSIZE = m_transformedSize;
+    bool       success            = false;
 
     // Needed in case we are switching from a custom modeline to a standard mode
     m_customDrmMode = {};
@@ -1036,7 +1034,7 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force)
             } else {
                 if (!autoScale) {
                     Log::logger->log(Log::ERR, "Invalid scale passed to monitor, {} found suggestion {}", m_scale, searchScale);
-                    static auto PDISABLENOTIFICATION = CConfigValue<Hyprlang::INT>("misc:disable_scale_notification");
+                    static auto PDISABLENOTIFICATION = CConfigValue<Config::INTEGER>("misc:disable_scale_notification");
                     if (!*PDISABLENOTIFICATION) {
                         Notification::overlay()->addNotification(
                             I18n::i18nEngine()->localize(I18n::TXT_KEY_NOTIF_MONITOR_AUTO_SCALE,
@@ -1067,11 +1065,16 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force)
 
     updateMatrix();
 
-    if ((WAS10B != m_enabled10bit || OLDRES != m_pixelSize)) {
+    if ((WAS10B != m_enabled10bit || OLDPIXELSIZE != m_pixelSize)) {
         m_resources.reset(); // TODO skip for 10bit change and fp16?
 
         if (g_pHyprRenderer && g_pHyprRenderer->glBackend())
             g_pHyprRenderer->glBackend()->destroyMonitorResources(m_self);
+    }
+
+    if (m_background && (OLDPIXELSIZE != m_pixelSize || OLDTRANSFORMEDSIZE != m_transformedSize)) {
+        Log::logger->log(Log::DEBUG, "{} reset BGTex: pixelSize {} -> {}, transformedSize {} -> {}", m_name, OLDPIXELSIZE, m_pixelSize, OLDTRANSFORMEDSIZE, m_transformedSize);
+        m_background.reset();
     }
 
     g_pCompositor->scheduleMonitorStateRecheck();
@@ -1127,8 +1130,8 @@ void CMonitor::addDamage(const CBox& box) {
 }
 
 bool CMonitor::shouldSkipScheduleFrameOnMouseEvent() {
-    static auto PNOBREAK = CConfigValue<Hyprlang::INT>("cursor:no_break_fs_vrr");
-    static auto PMINRR   = CConfigValue<Hyprlang::INT>("cursor:min_refresh_rate");
+    static auto PNOBREAK = CConfigValue<Config::INTEGER>("cursor:no_break_fs_vrr");
+    static auto PMINRR   = CConfigValue<Config::INTEGER>("cursor:min_refresh_rate");
 
     // skip scheduling extra frames for fullsreen apps with vrr
     const auto FS_WINDOW          = getFullscreenWindow();
@@ -1336,7 +1339,7 @@ float CMonitor::getDefaultScale() {
 }
 
 static bool shouldWraparound(const WORKSPACEID id1, const WORKSPACEID id2) {
-    static auto PWORKSPACEWRAPAROUND = CConfigValue<Hyprlang::INT>("animations:workspace_wraparound");
+    static auto PWORKSPACEWRAPAROUND = CConfigValue<Config::INTEGER>("animations:workspace_wraparound");
 
     if (!*PWORKSPACEWRAPAROUND)
         return false;
@@ -1394,7 +1397,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
 
         if (!noFocus && !Desktop::focusState()->monitor()->m_activeSpecialWorkspace &&
             !(Desktop::focusState()->window() && Desktop::focusState()->window()->m_pinned && Desktop::focusState()->window()->m_monitor == m_self)) {
-            static auto PFOLLOWMOUSE = CConfigValue<Hyprlang::INT>("input:follow_mouse");
+            static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
             auto        pWindow      = pWorkspace->m_hasFullscreenWindow ? pWorkspace->getFullscreenWindow() : pWorkspace->getLastFocusedWindow();
 
             if (!pWindow) {
@@ -1403,10 +1406,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
                                                                    Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
 
                 if (!pWindow)
-                    pWindow = pWorkspace->getTopLeftWindow();
-
-                if (!pWindow)
-                    pWindow = pWorkspace->getFirstWindow();
+                    pWindow = pWorkspace->getFocusCandidate();
             }
 
             Desktop::focusState()->fullWindowFocus(pWindow, Desktop::FOCUS_REASON_KEYBIND);
@@ -1564,7 +1564,7 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace) {
                 if (VECNOTINRECT(MIDDLE, PMONFROMMIDDLE->m_position.x, PMONFROMMIDDLE->m_position.y, PMONFROMMIDDLE->m_position.x + PMONFROMMIDDLE->m_size.x,
                                  PMONFROMMIDDLE->m_position.y + PMONFROMMIDDLE->m_size.y)) {
                     // not on any monitor, center
-                    pos = middle() / 2.f - w->m_realSize->goal() / 2.f;
+                    pos = middle() - w->m_realSize->goal() / 2.f;
                 } else
                     pos = pos - PMONFROMMIDDLE->m_position + m_position;
 
@@ -1755,10 +1755,10 @@ uint32_t CMonitor::isSolitaryBlocked(bool full) {
     }
 
     for (auto const& w : g_pCompositor->m_windows) {
-        if (w == PCANDIDATE || (!w->m_isMapped && !w->m_fadingOut) || w->isHidden())
+        if (w == PCANDIDATE || (!w->m_isMapped && !w->m_fadingOut) || !w->visible())
             continue;
 
-        if (w->workspaceID() == PCANDIDATE->workspaceID() && w->m_isFloating && w->m_createdOverFullscreen && w->visibleOnMonitor(m_self.lock())) {
+        if (w->workspaceID() == PCANDIDATE->workspaceID() && w->m_isFloating && w->isAllowedOverFullscreen() && w->visibleOnMonitor(m_self.lock())) {
             reasons |= SC_FLOAT;
             if (!full)
                 return reasons;
@@ -1797,7 +1797,7 @@ void CMonitor::recheckSolitary() {
 uint8_t CMonitor::isTearingBlocked(bool full) {
     uint8_t     reasons = 0;
 
-    static auto PTEARINGENABLED = CConfigValue<Hyprlang::INT>("general:allow_tearing");
+    static auto PTEARINGENABLED = CConfigValue<Config::INTEGER>("general:allow_tearing");
 
     if (!m_tearingState.nextRenderTorn) {
         reasons |= TC_NOT_TORN;
@@ -1852,8 +1852,8 @@ bool CMonitor::updateTearing() {
 
 uint16_t CMonitor::isDSBlocked(bool full) {
     uint16_t    reasons        = 0;
-    static auto PDIRECTSCANOUT = CConfigValue<Hyprlang::INT>("render:direct_scanout");
-    static auto PNONSHADER     = CConfigValue<Hyprlang::INT>("render:non_shader_cm");
+    static auto PDIRECTSCANOUT = CConfigValue<Config::INTEGER>("render:direct_scanout");
+    static auto PNONSHADER     = CConfigValue<Config::INTEGER>("render:non_shader_cm");
     const auto  PWORKSPACE     = m_activeWorkspace;
 
     // Fast reject for the hot render path; full=true callers still collect
@@ -1942,8 +1942,8 @@ uint16_t CMonitor::isDSBlocked(bool full) {
 }
 
 bool CMonitor::attemptDirectScanout() {
-    static const auto PSAME     = CConfigValue<Hyprlang::INT>("debug:ds_handle_same_buffer");
-    static const auto PSAMEFIFO = CConfigValue<Hyprlang::INT>("debug:ds_handle_same_buffer_fifo");
+    static const auto PSAME     = CConfigValue<Config::INTEGER>("debug:ds_handle_same_buffer");
+    static const auto PSAMEFIFO = CConfigValue<Config::INTEGER>("debug:ds_handle_same_buffer_fifo");
 
     const auto        blockedReason = isDSBlocked();
     if (blockedReason)
@@ -1991,7 +1991,8 @@ bool CMonitor::attemptDirectScanout() {
     if (m_lastScanout.expired())
         m_prevDrmFormat = m_drmFormat;
 
-    const bool NEEDS_TEST = !m_lastScanout || m_drmFormat != params.format; // do not retest while it's active
+    const auto PREV_FORMAT = m_drmFormat;
+    const bool NEEDS_TEST  = !m_lastScanout || m_drmFormat != params.format; // do not retest while it's active
     if (m_drmFormat != params.format) {
         m_output->state->setFormat(params.format);
         m_drmFormat = params.format;
@@ -2004,6 +2005,10 @@ bool CMonitor::attemptDirectScanout() {
 
     if (NEEDS_TEST && !m_state.test()) {
         Log::logger->log(Log::TRACE, "attemptDirectScanout: failed basic test");
+        if (m_drmFormat != PREV_FORMAT) {
+            m_output->state->setFormat(PREV_FORMAT);
+            m_drmFormat = PREV_FORMAT;
+        }
         return false;
     }
 
@@ -2029,6 +2034,10 @@ bool CMonitor::attemptDirectScanout() {
 
     if (!ok) {
         Log::logger->log(Log::TRACE, "attemptDirectScanout: failed to scanout surface");
+        if (m_drmFormat != PREV_FORMAT) {
+            m_output->state->setFormat(PREV_FORMAT);
+            m_drmFormat = PREV_FORMAT;
+        }
         m_lastScanout.reset();
         return false;
     }
@@ -2096,8 +2105,8 @@ bool CMonitor::isMultiGPU() {
 }
 
 bool CMonitor::shouldUseSoftwareCursors() {
-    static auto PNOHW      = CConfigValue<Hyprlang::INT>("cursor:no_hardware_cursors");
-    static auto PINVISIBLE = CConfigValue<Hyprlang::INT>("cursor:invisible");
+    static auto PNOHW      = CConfigValue<Config::INTEGER>("cursor:no_hardware_cursors");
+    static auto PINVISIBLE = CConfigValue<Config::INTEGER>("cursor:invisible");
 
     if (m_tearingState.activelyTearing)
         return true;
@@ -2305,7 +2314,7 @@ NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteri
 }
 
 uint32_t CMonitor::getPreferredReadFormat() {
-    static const auto PFORCE8BIT = CConfigValue<Hyprlang::INT>("misc:screencopy_force_8b");
+    static const auto PFORCE8BIT = CConfigValue<Config::INTEGER>("misc:screencopy_force_8b");
 
     auto              monFmt = m_output->state->state().drmFormat;
 
@@ -2336,7 +2345,7 @@ static bool isCompatibleTF(eTransferFunction sourceTF, eTransferFunction targetT
 
 // TODO support more drm properties
 bool CMonitor::canNoShaderCM(bool forDSmode) {
-    static auto PNONSHADER = CConfigValue<Hyprlang::INT>("render:non_shader_cm");
+    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
     if (*PNONSHADER == CM_NS_DISABLE)
         return false;
 
