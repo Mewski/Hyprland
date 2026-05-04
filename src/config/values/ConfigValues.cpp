@@ -377,6 +377,7 @@ std::vector<SP<IValue>> Values::getConfigValues() {
         MS<Bool>("gestures:workspace_swipe_use_r", "if enabled, swiping will use the r prefix instead of the m prefix for finding workspaces.", false),
         MS<Int>("gestures:close_max_timeout", "Timeout for closing windows with the close gesture, in ms.", 1000, {.min = 10, .max = 2000}),
         MS<Bool>("gestures:scrolling:move_snap_to_grid", "when releasing the scroll move gesture, whether it should try to snap to the grid", true),
+        MS<Bool>("gestures:scrolling:move_focuses_cursor", "when the scroll move gesture focuses a window, warp the cursor to it", true),
 
         /*
          * group:

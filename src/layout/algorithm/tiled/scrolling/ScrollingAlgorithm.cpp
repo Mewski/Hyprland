@@ -1613,6 +1613,8 @@ SP<SColumnData> CScrollingAlgorithm::snapToProjectedOffset(double projectedNorma
 }
 
 void CScrollingAlgorithm::focusColumn(SP<SColumnData> column) {
+    static const auto PMOVEFOCUSESCURSOR = CConfigValue<Config::BOOL>("gestures:scrolling:move_focuses_cursor");
+
     if (!column || column->targetDatas.empty()) {
         focusTargetUpdate(nullptr);
         return;
@@ -1631,7 +1633,12 @@ void CScrollingAlgorithm::focusColumn(SP<SColumnData> column) {
         }
     }
 
-    focusTargetUpdate(targetData ? targetData->target.lock() : nullptr);
+    const auto TARGET = targetData ? targetData->target.lock() : nullptr;
+
+    focusTargetUpdate(TARGET);
+
+    if (*PMOVEFOCUSESCURSOR && TARGET && TARGET->window())
+        TARGET->window()->warpCursor();
 }
 
 SP<SColumnData> CScrollingAlgorithm::getColumnAtViewportCenter() {

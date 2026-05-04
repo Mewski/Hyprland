@@ -100,6 +100,48 @@ TEST_CASE(scrollFocusWrapping) {
     }
 }
 
+TEST_CASE(scrollMoveGestureWarpsCursorToFocusedWindow) {
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'scrolling' }, input = { follow_mouse = 0 } })"));
+    OK(getFromSocket("/eval hl.gesture({ fingers = 6, direction = 'horizontal', action = 'scroll_move' })"));
+
+    for (auto const& win : {"a", "b"}) {
+        if (!Tests::spawnKitty(win)) {
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+        }
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:a' })"));
+    OK(getFromSocket("/dispatch hl.dsp.cursor.move({ x = 10, y = 10 })"));
+
+    const std::string cursorBefore = getFromSocket("/cursorpos");
+
+    OK(getFromSocket("/eval hl.plugin.test.gesture('right', 6)"));
+
+    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: b");
+    EXPECT(cursorBefore != getFromSocket("/cursorpos"), true);
+}
+
+TEST_CASE(scrollMoveGestureCanLeaveCursorInPlace) {
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'scrolling' }, input = { follow_mouse = 0 }, gestures = { scrolling = { move_focuses_cursor = false } } })"));
+    OK(getFromSocket("/eval hl.gesture({ fingers = 6, direction = 'horizontal', action = 'scroll_move' })"));
+
+    for (auto const& win : {"a", "b"}) {
+        if (!Tests::spawnKitty(win)) {
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+        }
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:a' })"));
+    OK(getFromSocket("/dispatch hl.dsp.cursor.move({ x = 10, y = 10 })"));
+
+    const std::string cursorBefore = getFromSocket("/cursorpos");
+
+    OK(getFromSocket("/eval hl.plugin.test.gesture('right', 6)"));
+
+    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: b");
+    EXPECT(cursorBefore == getFromSocket("/cursorpos"), true);
+}
+
 TEST_CASE(scrollSwapcolWrapping) {
     OK(getFromSocket("r/eval hl.config({ general = { layout = 'scrolling' } })"));
 
