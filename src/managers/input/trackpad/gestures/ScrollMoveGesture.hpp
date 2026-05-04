@@ -5,10 +5,7 @@
 #include "../../../../helpers/memory/Memory.hpp"
 
 #include <cstdint>
-
-namespace Layout::Tiled {
-    struct SColumnData;
-}
+#include <deque>
 
 class CScrollMoveTrackpadGesture : public ITrackpadGesture {
   public:
@@ -24,13 +21,23 @@ class CScrollMoveTrackpadGesture : public ITrackpadGesture {
     static bool  isGestureInProgress();
 
   private:
-    bool                           m_wasScrollingLayout = false;
-    bool                           m_hasLastUpdate      = false;
-    uint32_t                       m_lastUpdateTimeMs   = 0;
-    double                         m_velocity           = 0.0;
-    double                         m_startedOffset      = 0.0;
-    PHLMONITORREF                  m_monitor;
-    WP<Layout::Tiled::SColumnData> m_startedColumn = nullptr;
+    struct STrackerEvent {
+        double   delta     = 0.0;
+        uint32_t timestamp = 0;
+    };
 
-    static bool                    s_gestureInProgress;
+    void                      trackerReset();
+    void                      trackerPush(double delta, uint32_t timeMs);
+    double                    trackerVelocity();
+    double                    trackerProjectedEndPos();
+    void                      trackerTrimHistory();
+
+    std::deque<STrackerEvent> m_history;
+    double                    m_trackerPos = 0.0;
+
+    PHLMONITORREF             m_monitor;
+    double                    m_baseOffset = 0.0;
+    bool                      m_active     = false;
+
+    static bool               s_gestureInProgress;
 };
